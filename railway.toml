@@ -1,0 +1,11 @@
+# Railway deployment configuration
+# This file tells Railway how to build and deploy your app
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "cd backend && gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120"
+
+[env]
+PYTHONPATH = "/app:/app/backend"
