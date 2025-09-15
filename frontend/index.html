@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Photo Reader OCR</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/cropperjs@1.6.2/dist/cropper.min.css" />
+  <style>
+    /* Ensure modal scroll doesn't shrink cropper unexpectedly */
+    #cropperImage { max-width: 100%; }
+    /* Active aspect ratio button (manual since we cannot use @apply here) */
+    .ar-btn.active { background-color:#4f46e5; color:#fff; }
+  </style>
 </head>
 <body class="min-h-full bg-gray-50 text-gray-800">
   <div class="max-w-3xl mx-auto py-10 px-4">
@@ -30,16 +37,33 @@
         <button type="submit" class="inline-flex items-center px-4 py-2 rounded-md bg-indigo-600 text-white font-medium hover:bg-indigo-500 disabled:opacity-50" id="submitBtn">Extract Text</button>
       </form>
 
-      <!-- Cropping Modal -->
+      <!-- Cropping Modal (Cropper.js) -->
       <div id="cropModal" class="hidden fixed inset-0 bg-black/60 z-40 items-center justify-center p-4">
-        <div class="bg-white rounded-lg shadow-lg w-full max-w-3xl flex flex-col max-h-[90vh]">
+        <div class="bg-white rounded-lg shadow-lg w-full max-w-4xl flex flex-col max-h-[95vh]">
           <div class="flex items-center justify-between px-4 py-2 border-b">
             <h3 class="font-semibold">Crop Image</h3>
             <button id="closeCropModal" class="text-gray-500 hover:text-gray-700">✕</button>
           </div>
-          <div class="p-4 overflow-auto">
-            <canvas id="cropCanvas" class="border rounded w-full max-h-[65vh] cursor-crosshair"></canvas>
-            <p class="text-xs text-gray-500 mt-2">Drag to select crop area. Adjust by dragging corners. Confirm when satisfied.</p>
+          <div class="p-4 flex flex-col gap-4 overflow-auto">
+            <div class="relative w-full flex justify-center">
+              <img id="cropperImage" alt="To crop" class="max-h-[65vh] select-none" />
+            </div>
+            <div class="flex flex-wrap items-center gap-2 text-xs">
+              <span class="font-medium mr-1">Aspect:</span>
+              <button type="button" class="ar-btn px-2 py-1 rounded bg-gray-200 hover:bg-gray-300" data-ar="free">Free</button>
+              <button type="button" class="ar-btn px-2 py-1 rounded bg-gray-200 hover:bg-gray-300" data-ar="1">1:1</button>
+              <button type="button" class="ar-btn px-2 py-1 rounded bg-gray-200 hover:bg-gray-300" data-ar="1.7777777778">16:9</button>
+              <button type="button" class="ar-btn px-2 py-1 rounded bg-gray-200 hover:bg-gray-300" data-ar="0.75">3:4</button>
+              <div class="h-6 w-px bg-gray-300 mx-1"></div>
+              <label class="flex items-center gap-1">Zoom
+                <input id="zoomSlider" type="range" min="0.1" max="3" step="0.01" value="1" class="w-40">
+              </label>
+              <div class="h-6 w-px bg-gray-300 mx-1"></div>
+              <button id="rotateLeft" type="button" class="px-2 py-1 rounded bg-gray-200 hover:bg-gray-300">⟲</button>
+              <button id="rotateRight" type="button" class="px-2 py-1 rounded bg-gray-200 hover:bg-gray-300">⟳</button>
+              <button id="resetCropper" type="button" class="px-2 py-1 rounded bg-gray-200 hover:bg-gray-300">Reset</button>
+            </div>
+            <p class="text-xs text-gray-500">Pinch (on touch) or use slider / mousewheel to zoom. Drag to move. Adjust aspect ratio as needed.</p>
           </div>
           <div class="flex gap-3 justify-end px-4 py-3 border-t bg-gray-50">
             <button id="cancelCrop" class="px-4 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300">Cancel</button>
@@ -62,6 +86,7 @@
     <p class="mt-10 text-center text-xs text-gray-500">Backend assumed at http://localhost:8000 (override still possible with ?api= param).</p>
   </div>
 
+  <script src="https://unpkg.com/cropperjs@1.6.2/dist/cropper.min.js"></script>
   <script>
     // OCR text formatting utility with strict & enhanced modes.
     function formatOcrText(raw, { mode = 'strict', enableDictionary = false } = {}) {
@@ -142,104 +167,16 @@
     const closeCropModal = document.getElementById('closeCropModal');
     const cancelCrop = document.getElementById('cancelCrop');
     const applyCrop = document.getElementById('applyCrop');
-    const cropCanvas = document.getElementById('cropCanvas');
-    const ctx = cropCanvas.getContext('2d');
+    const cropperImage = document.getElementById('cropperImage');
+    const aspectButtons = () => Array.from(document.querySelectorAll('.ar-btn'));
+    const zoomSlider = document.getElementById('zoomSlider');
+    const rotateLeft = document.getElementById('rotateLeft');
+    const rotateRight = document.getElementById('rotateRight');
+    const resetCropperBtn = document.getElementById('resetCropper');
 
-    let originalImageBitmap = null;
-    let currentImageFile = null; // The original file selected
-    let croppedBlob = null;      // Result of cropping (if any)
-    let selection = null;        // {x,y,w,h}
-    let isDragging = false;
-    let dragHandle = null;       // which corner
-
-    const HANDLE_SIZE = 10;
-
-    function drawCanvas() {
-      if (!originalImageBitmap) return;
-      cropCanvas.width = originalImageBitmap.width;
-      cropCanvas.height = originalImageBitmap.height;
-      ctx.drawImage(originalImageBitmap, 0, 0);
-      if (selection) {
-        ctx.save();
-        ctx.strokeStyle = '#4f46e5';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(selection.x, selection.y, selection.w, selection.h);
-        ctx.fillStyle = 'rgba(79,70,229,0.15)';
-        ctx.fillRect(selection.x, selection.y, selection.w, selection.h);
-        // handles
-        ctx.fillStyle = '#4f46e5';
-        const corners = getHandles();
-        corners.forEach(pt => ctx.fillRect(pt.x - HANDLE_SIZE/2, pt.y - HANDLE_SIZE/2, HANDLE_SIZE, HANDLE_SIZE));
-        ctx.restore();
-      }
-    }
-
-    function getHandles() {
-      if (!selection) return [];
-      const {x,y,w,h} = selection;
-      return [
-        {name:'tl', x:x, y:y},
-        {name:'tr', x:x+w, y:y},
-        {name:'bl', x:x, y:y+h},
-        {name:'br', x:x+w, y:y+h}
-      ];
-    }
-
-    function pointInHandle(px, py) {
-      return getHandles().find(h => Math.abs(h.x - px) <= HANDLE_SIZE && Math.abs(h.y - py) <= HANDLE_SIZE);
-    }
-
-    cropCanvas.addEventListener('mousedown', (e) => {
-      const rect = cropCanvas.getBoundingClientRect();
-      const x = (e.clientX - rect.left);
-      const y = (e.clientY - rect.top);
-      if (selection) {
-        const h = pointInHandle(x,y);
-        if (h) {
-          dragHandle = h.name;
-          isDragging = true;
-          return;
-        }
-      }
-      // Start new selection
-      selection = {x, y, w:0, h:0};
-      isDragging = true;
-      dragHandle = 'new';
-    });
-
-    cropCanvas.addEventListener('mousemove', (e) => {
-      if (!isDragging || !selection) return;
-      const rect = cropCanvas.getBoundingClientRect();
-      const x = (e.clientX - rect.left);
-      const y = (e.clientY - rect.top);
-      if (dragHandle === 'new') {
-        selection.w = x - selection.x;
-        selection.h = y - selection.y;
-      } else {
-        // Resize existing
-        const {x:ox,y:oy,w,h} = selection;
-        let nx=ox, ny=oy, nw=w, nh=h;
-        if (dragHandle.includes('t')) { nh = (oy + h) - y; ny = y; }
-        if (dragHandle.includes('b')) { nh = y - oy; }
-        if (dragHandle.includes('l')) { nw = (ox + w) - x; nx = x; }
-        if (dragHandle.includes('r')) { nw = x - ox; }
-        selection = {x:nx, y:ny, w:nw, h:nh};
-      }
-      drawCanvas();
-    });
-
-    window.addEventListener('mouseup', () => {
-      if (isDragging) {
-        isDragging = false;
-        dragHandle = null;
-        // Normalize negative width/height
-        if (selection) {
-          if (selection.w < 0) { selection.x += selection.w; selection.w *= -1; }
-          if (selection.h < 0) { selection.y += selection.h; selection.h *= -1; }
-        }
-        drawCanvas();
-      }
-    });
+    let cropper = null;
+    let currentImageFile = null; // original file
+    let croppedBlob = null;      // cropped output
 
     imageInput.addEventListener('change', async () => {
       const file = imageInput.files?.[0];
@@ -262,10 +199,37 @@
       if (!currentImageFile) return;
       cropModal.classList.remove('hidden');
       cropModal.classList.add('flex');
-      selection = null;
-      const imgBitmap = await createImageBitmap(currentImageFile);
-      originalImageBitmap = imgBitmap;
-      drawCanvas();
+      croppedBlob = null; // reset
+      const url = URL.createObjectURL(currentImageFile);
+      cropperImage.src = url;
+      // Delay instantiation until image loads
+      cropperImage.onload = () => {
+        if (cropper) { cropper.destroy(); }
+        cropper = new Cropper(cropperImage, {
+          viewMode: 1,
+          dragMode: 'move',
+          autoCropArea: 0.9,
+          responsive: true,
+          background: false,
+          modal: true,
+          movable: true,
+          zoomable: true,
+          rotatable: true,
+          scalable: false,
+          checkOrientation: true,
+          wheelZoomRatio: 0.1,
+          ready() {
+            zoomSlider.value = '1';
+            highlightAspect('free');
+          },
+          zoom(e) {
+            // Sync slider
+            const imgData = cropper.getImageData();
+            const ratio = imgData.scaleX; // approximate
+            zoomSlider.value = Math.min(3, Math.max(0.1, ratio)).toString();
+          }
+        });
+      };
     });
 
     closeCropModal.addEventListener('click', closeModal);
@@ -273,18 +237,53 @@
     function closeModal(){
       cropModal.classList.add('hidden');
       cropModal.classList.remove('flex');
+      if (cropper) { cropper.destroy(); cropper = null; }
+    }
+    function highlightAspect(val) {
+      aspectButtons().forEach(btn => {
+        if (btn.dataset.ar === val) {
+          btn.classList.add('bg-indigo-600','text-white');
+          btn.classList.remove('bg-gray-200','text-gray-800');
+        } else {
+          btn.classList.remove('bg-indigo-600','text-white');
+          btn.classList.add('bg-gray-200','text-gray-800');
+        }
+      });
     }
 
+    aspectButtons().forEach(btn => {
+      btn.addEventListener('click', () => {
+        const val = btn.dataset.ar;
+        highlightAspect(val);
+        if (!cropper) return;
+        if (val === 'free') {
+          cropper.setAspectRatio(NaN);
+        } else {
+          cropper.setAspectRatio(parseFloat(val));
+        }
+      });
+    });
+
+    zoomSlider.addEventListener('input', () => {
+      if (!cropper) return;
+      const targetZoom = parseFloat(zoomSlider.value);
+      // Compute current ratio vs target, use zoomTo
+      cropper.zoomTo(targetZoom);
+    });
+
+    rotateLeft.addEventListener('click', () => { if (cropper) cropper.rotate(-90); });
+    rotateRight.addEventListener('click', () => { if (cropper) cropper.rotate(90); });
+    resetCropperBtn.addEventListener('click', () => { if (cropper) { cropper.reset(); zoomSlider.value = '1'; } });
+
     applyCrop.addEventListener('click', () => {
-      if (!selection || !originalImageBitmap) { closeModal(); return; }
-      const off = document.createElement('canvas');
-      off.width = selection.w; off.height = selection.h;
-      off.getContext('2d').drawImage(originalImageBitmap, selection.x, selection.y, selection.w, selection.h, 0,0, selection.w, selection.h);
-      off.toBlob(b => {
+      if (!cropper) { closeModal(); return; }
+      const canvas = cropper.getCroppedCanvas({
+        imageSmoothingQuality: 'high'
+      });
+      canvas.toBlob(b => {
         if (b) {
           croppedBlob = b;
-          const croppedUrl = URL.createObjectURL(b);
-          previewImage.src = croppedUrl;
+          previewImage.src = URL.createObjectURL(b);
           resetCropBtn.classList.remove('hidden');
         }
         closeModal();
