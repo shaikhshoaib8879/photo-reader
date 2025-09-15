@@ -6,6 +6,7 @@
   <title>Photo Reader OCR</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://unpkg.com/cropperjs@1.6.2/dist/cropper.min.css" />
+  <script src="https://unpkg.com/nspell/dist/nspell.js"></script>
   <style>
     /* Ensure modal scroll doesn't shrink cropper unexpectedly */
     #cropperImage { max-width: 100%; }
@@ -89,7 +90,44 @@
   <script src="https://unpkg.com/cropperjs@1.6.2/dist/cropper.min.js"></script>
   <script>
     // OCR text formatting utility with strict & enhanced modes.
-    function formatOcrText(raw, { mode = 'strict', enableDictionary = false } = {}) {
+    // Spellcheck setup (lazy-load dictionary once). Uses nspell + US English dict.
+    const SPELL_CONFIG = {
+      aff: 'https://unpkg.com/dictionary-en-us/en_US.aff',
+      dic: 'https://unpkg.com/dictionary-en-us/en_US.dic'
+    };
+    let spellInstance = null;
+    let spellLoading = false;
+    async function ensureSpellLoaded() {
+      if (spellInstance || spellLoading) return spellInstance;
+      spellLoading = true;
+      try {
+        const [affRes, dicRes] = await Promise.all([
+          fetch(SPELL_CONFIG.aff),
+          fetch(SPELL_CONFIG.dic)
+        ]);
+        const [affText, dicText] = await Promise.all([affRes.text(), dicRes.text()]);
+        if (window.nspell) {
+          spellInstance = window.nspell(affText, dicText);
+        }
+      } catch (e) {
+        console.warn('Spell dictionary load failed:', e);
+      } finally {
+        spellLoading = false;
+      }
+      return spellInstance;
+    }
+
+    // Lightweight Levenshtein distance for confidence heuristic
+    function lev(a,b){
+      if (a===b) return 0; if (!a) return b.length; if (!b) return a.length;
+      const dp = Array(b.length+1).fill(0).map((_,i)=>i); let prevRow;
+      for (let i=1;i<=a.length;i++){ prevRow = dp.slice(); dp[0]=i; for (let j=1;j<=b.length;j++){ const cost=a[i-1]===b[j-1]?0:1; dp[j]=Math.min(prevRow[j]+1, dp[j-1]+1, prevRow[j-1]+cost); } }
+      return dp[b.length];
+    }
+
+    // Core cleanup formatter with optional spell correction.
+    // NOTE: Returns string or (if spellcheck enabled and dictionary not yet ready) a Promise resolving to string.
+    function formatOcrText(raw, { mode = 'strict', enableDictionary = false, enableSpellCheck = false } = {}) {
       if (!raw || typeof raw !== 'string') return raw || '';
       let text = raw;
 
@@ -110,38 +148,85 @@
         .filter(Boolean);
       text = sentenceSplit.join('\n\n'); // extra blank line for paragraph-style separation
 
-      if (mode === 'strict') {
-        return text; // Do not alter words further
+      const proceedEnhanced = () => {
+        if (mode === 'strict') {
+          return text; // Do not alter words further
+        }
+
+        // Enhanced mode heuristics
+        // 1. Apostrophe artifacts (Teacher'_ => Teacher's)
+        text = text.replace(/([A-Za-z])['_’]([A-Za-z])/g, "$1'$2");
+
+        // 2. Hyphen/dash normalization for aside (word - word) => spaced en dash
+        text = text.replace(/\s-\s/g, ' – ');
+        text = text.replace(/([A-Za-z])-(\s)/g, '$1 –$2');
+
+        // 3. Lowercase accidental capital after comma if mixed case afterwards
+        text = text.replace(/,\s+([A-Z])(\p{Ll}+)/gu, (m, first, rest) => ', ' + first.toLowerCase() + rest);
+
+        // 4. Ellipsis normalization ('. . .' or spaced) => '...'
+        text = text.replace(/(\.)\s+(\.)\s+(\.)/g, '...');
+
+        if (enableDictionary) {
+          // Very conservative dictionary corrections at sentence start
+          text = text.replace(/(^|\n\n)Thad\b/g, '$1I had');
+        }
+
+        // Lowercase stray ' For' -> ' for' when inside sentence (heuristic)
+        text = text.replace(/(?<=\b[a-z]) For\b/g, ' for');
+
+        // Trim trailing spaces per line
+        text = text.split(/\n/).map(l => l.trimEnd()).join('\n');
+        return text;
+      };
+
+      text = proceedEnhanced();
+
+      if (!enableSpellCheck) return text;
+
+      // Spellcheck correction (synchronous if dict loaded, otherwise async deferred)
+      const techWhitelist = new Set(['Node.js','NestJS','RoR','React','Vue','Angular','Django','Flask','FastAPI','Next.js','Nuxt','Svelte','TypeScript','JavaScript','AWS','Azure','GCP','PostgreSQL','MySQL','MongoDB','Redis','Kafka','Kubernetes','Docker','CI/CD','HTML','CSS']);
+      const emailRegex = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+      const urlRegex = /^https?:\/\//i;
+      const acronymRegex = /^[A-Z]{2,}$/;
+      const tokenRegex = /[A-Za-z][A-Za-z'’.-]*/g;
+
+      function preserveCase(original, suggestion){
+        if (original === original.toUpperCase()) return suggestion.toUpperCase();
+        if (original[0] === original[0].toUpperCase() && original.slice(1) === original.slice(1).toLowerCase()) {
+          return suggestion[0].toUpperCase() + suggestion.slice(1).toLowerCase();
+        }
+        return suggestion; // mixed case keep suggestion as is
       }
 
-      // Enhanced mode heuristics
-      // 1. Apostrophe artifacts (Teacher'_ => Teacher's)
-      text = text.replace(/([A-Za-z])['_’]([A-Za-z])/g, "$1'$2");
-
-      // 2. Hyphen/dash normalization for aside (word - word) => spaced en dash
-      text = text.replace(/\s-\s/g, ' – ');
-      text = text.replace(/([A-Za-z])-(\s)/g, '$1 –$2');
-
-      // 3. Lowercase accidental capital after comma if mixed case afterwards
-      text = text.replace(/,\s+([A-Z])(\p{Ll}+)/gu, (m, first, rest) => ', ' + first.toLowerCase() + rest);
-
-      // 4. Ellipsis normalization ('. . .' or spaced) => '...'
-      text = text.replace(/(\.)\s+(\.)\s+(\.)/g, '...');
-
-      if (enableDictionary) {
-        // Very conservative dictionary corrections at sentence start
-        // Thad -> I had (common OCR slip when I merges with h)
-        text = text.replace(/(^|\n\n)Thad\b/g, '$1I had');
-        // Zen got to me First -> But Zen got to me first (OPTIONAL, commented out because semantic)
-        // text = text.replace(/(^|\n\n)but Zen got to me First/gi, (m) => m.replace(/First/g,'first'));
+      function applySpell(str) {
+        if (!spellInstance) return str; // dictionary not ready
+        return str.replace(tokenRegex, (tok) => {
+          const base = tok.replace(/^[^A-Za-z]+|[^A-Za-z]+$/g,'');
+          if (!base) return tok;
+          if (emailRegex.test(base) || urlRegex.test(base)) return tok;
+          if (techWhitelist.has(base) || techWhitelist.has(base.replace(/\.$/, ''))) return tok;
+          if (acronymRegex.test(base) && base.length <= 5) return tok; // treat short acronyms as fixed
+          if (/\d/.test(base)) return tok;
+          if (base.length <= 2) return tok; // ignore tiny words
+          if (spellInstance.correct(base)) return tok;
+          const suggestions = spellInstance.suggest(base);
+            if (!suggestions || !suggestions.length) return tok;
+          const candidate = suggestions[0];
+          const distance = lev(base.toLowerCase(), candidate.toLowerCase());
+          // Confidence heuristic: allow distance 1 always; distance 2 only if word length > 5; reject others.
+          if (distance === 1 || (distance === 2 && base.length > 5)) {
+            return preserveCase(tok, candidate);
+          }
+          return tok;
+        });
       }
 
-      // Lowercase stray ' For' -> ' for' when inside sentence (heuristic)
-      text = text.replace(/(?<=\b[a-z]) For\b/g, ' for');
-
-      // Trim trailing spaces per line
-      text = text.split(/\n/).map(l => l.trimEnd()).join('\n');
-      return text;
+      if (spellInstance) {
+        return applySpell(text);
+      }
+      // Return a Promise that resolves once dictionary is loaded & applied
+      return ensureSpellLoaded().then(() => applySpell(text)).catch(()=>text);
     }
     const form = document.getElementById('ocrForm');
     const progress = document.getElementById('progress');
@@ -335,8 +420,16 @@
         // Format sentences: split on period followed by space or end, keep punctuation
         const rawText = data.text || '';
         // Choose mode: default strict; can switch to 'enhanced'
-        const formatted = formatOcrText(rawText, { mode: 'enhanced', enableDictionary: false });
-        resultText.textContent = formatted || '(No text detected)';
+        const maybePromise = formatOcrText(rawText, { mode: 'enhanced', enableDictionary: false, enableSpellCheck: true });
+        if (maybePromise && typeof maybePromise.then === 'function') {
+          const interim = '(Loading dictionary & cleaning...)\n' + (rawText.slice(0,400) || '');
+          resultText.textContent = interim;
+          maybePromise.then(finalText => {
+            resultText.textContent = finalText || '(No text detected)';
+          });
+        } else {
+          resultText.textContent = maybePromise || '(No text detected)';
+        }
         metaEl.innerHTML = `Word count: ${data.meta?.word_count ?? '-'}<br/>Average confidence: ${data.meta?.average_confidence ?? '-'}<br/>Tesseract: ${data.meta?.tesseract_version ?? '-'}`;
         resultWrapper.classList.remove('hidden');
       } catch (err) {
