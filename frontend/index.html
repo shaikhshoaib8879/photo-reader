@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Photo Reader OCR</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-full bg-gray-50 text-gray-800">
+  <div class="max-w-3xl mx-auto py-10 px-4">
+    <h1 class="text-3xl font-bold mb-6 text-center">Photo Reader OCR</h1>
+
+    <div class="bg-white shadow rounded-lg p-6">
+      <form id="ocrForm" class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium mb-1" for="imageInput">Select an image</label>
+          <input id="imageInput" name="image" type="file" accept="image/*" class="block w-full text-sm text-gray-900 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" required />
+        </div>
+        <button type="submit" class="inline-flex items-center px-4 py-2 rounded-md bg-indigo-600 text-white font-medium hover:bg-indigo-500 disabled:opacity-50" id="submitBtn">Extract Text</button>
+      </form>
+
+      <div id="progress" class="hidden mt-4 text-sm text-indigo-600">Processing... Please wait.</div>
+      <div id="error" class="hidden mt-4 text-sm text-red-600"></div>
+
+      <div id="resultWrapper" class="hidden mt-8">
+        <h2 class="text-xl font-semibold mb-2">Extracted Text</h2>
+        <pre id="resultText" class="whitespace-pre-wrap p-4 bg-gray-900 text-gray-100 rounded-md text-sm overflow-x-auto"></pre>
+        <h3 class="text-md font-semibold mt-6 mb-2">Metadata</h3>
+        <div id="meta" class="text-sm text-gray-700"></div>
+      </div>
+    </div>
+
+    <p class="mt-10 text-center text-xs text-gray-500">Backend API URL configurable via ?api= parameter.</p>
+  </div>
+
+  <script>
+    const form = document.getElementById('ocrForm');
+    const progress = document.getElementById('progress');
+    const errorEl = document.getElementById('error');
+    const resultWrapper = document.getElementById('resultWrapper');
+    const resultText = document.getElementById('resultText');
+    const metaEl = document.getElementById('meta');
+    const submitBtn = document.getElementById('submitBtn');
+
+    function getApiBase() {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('api') || 'http://localhost:8000';
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorEl.classList.add('hidden');
+      resultWrapper.classList.add('hidden');
+      progress.classList.remove('hidden');
+      submitBtn.disabled = true;
+
+      const apiBase = getApiBase();
+      const fileInput = document.getElementById('imageInput');
+      if (!fileInput.files.length) {
+        errorEl.textContent = 'Please choose a file first';
+        errorEl.classList.remove('hidden');
+        progress.classList.add('hidden');
+        submitBtn.disabled = false;
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('image', fileInput.files[0]);
+
+      try {
+        const resp = await fetch(apiBase + '/ocr', {
+          method: 'POST',
+          body: formData
+        });
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+            throw new Error(data.error || 'Request failed');
+        }
+        const data = await resp.json();
+        resultText.textContent = data.text || '(No text detected)';
+        metaEl.innerHTML = `Word count: ${data.meta?.word_count ?? '-'}<br/>Average confidence: ${data.meta?.average_confidence ?? '-'}<br/>Tesseract: ${data.meta?.tesseract_version ?? '-'}`;
+        resultWrapper.classList.remove('hidden');
+      } catch (err) {
+        errorEl.textContent = err.message;
+        errorEl.classList.remove('hidden');
+      } finally {
+        progress.classList.add('hidden');
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
