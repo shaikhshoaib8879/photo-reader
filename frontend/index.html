@@ -63,6 +63,61 @@
   </div>
 
   <script>
+    // OCR text formatting utility with strict & enhanced modes.
+    function formatOcrText(raw, { mode = 'strict', enableDictionary = false } = {}) {
+      if (!raw || typeof raw !== 'string') return raw || '';
+      let text = raw;
+
+      // Normalize line endings first
+      text = text.replace(/\r\n?/g, '\n');
+
+      // Collapse multiple spaces (but keep newlines for now)
+      text = text.replace(/[ \t]{2,}/g, ' ');
+
+      // Ensure one space after punctuation (comma, period, colon, semicolon, question, exclamation) if followed by a word or quote
+      text = text.replace(/([,.;:!?])(?!\s|$)/g, '$1 ');
+      text = text.replace(/([,.;:!?])\s{2,}/g, '$1 ');
+
+      // Sentence segmentation (safe): split on punctuation + space(s) when next char looks like start of new sentence
+      const sentenceSplit = text
+        .split(/(?<=[.!?])\s+(?=[A-Z0-9"'([{])/)
+        .map(s => s.trim())
+        .filter(Boolean);
+      text = sentenceSplit.join('\n\n'); // extra blank line for paragraph-style separation
+
+      if (mode === 'strict') {
+        return text; // Do not alter words further
+      }
+
+      // Enhanced mode heuristics
+      // 1. Apostrophe artifacts (Teacher'_ => Teacher's)
+      text = text.replace(/([A-Za-z])['_’]([A-Za-z])/g, "$1'$2");
+
+      // 2. Hyphen/dash normalization for aside (word - word) => spaced en dash
+      text = text.replace(/\s-\s/g, ' – ');
+      text = text.replace(/([A-Za-z])-(\s)/g, '$1 –$2');
+
+      // 3. Lowercase accidental capital after comma if mixed case afterwards
+      text = text.replace(/,\s+([A-Z])(\p{Ll}+)/gu, (m, first, rest) => ', ' + first.toLowerCase() + rest);
+
+      // 4. Ellipsis normalization ('. . .' or spaced) => '...'
+      text = text.replace(/(\.)\s+(\.)\s+(\.)/g, '...');
+
+      if (enableDictionary) {
+        // Very conservative dictionary corrections at sentence start
+        // Thad -> I had (common OCR slip when I merges with h)
+        text = text.replace(/(^|\n\n)Thad\b/g, '$1I had');
+        // Zen got to me First -> But Zen got to me first (OPTIONAL, commented out because semantic)
+        // text = text.replace(/(^|\n\n)but Zen got to me First/gi, (m) => m.replace(/First/g,'first'));
+      }
+
+      // Lowercase stray ' For' -> ' for' when inside sentence (heuristic)
+      text = text.replace(/(?<=\b[a-z]) For\b/g, ' for');
+
+      // Trim trailing spaces per line
+      text = text.split(/\n/).map(l => l.trimEnd()).join('\n');
+      return text;
+    }
     const form = document.getElementById('ocrForm');
     const progress = document.getElementById('progress');
     const errorEl = document.getElementById('error');
@@ -280,12 +335,9 @@
         const data = await resp.json();
         // Format sentences: split on period followed by space or end, keep punctuation
         const rawText = data.text || '';
-        const sentences = rawText
-          .split(/(?<=\.)\s+/)
-          .map(s => s.trim())
-          .filter(Boolean);
-        const formatted = sentences.length ? sentences.join('\n') : (rawText || '(No text detected)');
-        resultText.textContent = formatted;
+        // Choose mode: default strict; can switch to 'enhanced'
+        const formatted = formatOcrText(rawText, { mode: 'enhanced', enableDictionary: false });
+        resultText.textContent = formatted || '(No text detected)';
         metaEl.innerHTML = `Word count: ${data.meta?.word_count ?? '-'}<br/>Average confidence: ${data.meta?.average_confidence ?? '-'}<br/>Tesseract: ${data.meta?.tesseract_version ?? '-'}`;
         resultWrapper.classList.remove('hidden');
       } catch (err) {
