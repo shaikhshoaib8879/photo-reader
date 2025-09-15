@@ -16,8 +16,37 @@
           <label class="block text-sm font-medium mb-1" for="imageInput">Select an image</label>
           <input id="imageInput" name="image" type="file" accept="image/*" class="block w-full text-sm text-gray-900 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" required />
         </div>
+
+        <div id="previewWrapper" class="hidden space-y-2">
+          <div class="relative border rounded-md overflow-hidden bg-gray-100 aspect-video max-h-96 flex items-center justify-center">
+            <img id="previewImage" alt="Preview" class="max-h-96 object-contain" />
+          </div>
+          <div class="flex gap-2 flex-wrap">
+            <button type="button" id="editBtn" class="px-3 py-2 rounded-md bg-gray-200 hover:bg-gray-300 text-sm font-medium text-gray-800">Edit / Crop</button>
+            <button type="button" id="resetCropBtn" class="px-3 py-2 rounded-md bg-gray-200 hover:bg-gray-300 text-sm font-medium text-gray-800 hidden">Reset Crop</button>
+          </div>
+        </div>
+
         <button type="submit" class="inline-flex items-center px-4 py-2 rounded-md bg-indigo-600 text-white font-medium hover:bg-indigo-500 disabled:opacity-50" id="submitBtn">Extract Text</button>
       </form>
+
+      <!-- Cropping Modal -->
+      <div id="cropModal" class="hidden fixed inset-0 bg-black/60 z-40 items-center justify-center p-4">
+        <div class="bg-white rounded-lg shadow-lg w-full max-w-3xl flex flex-col max-h-[90vh]">
+          <div class="flex items-center justify-between px-4 py-2 border-b">
+            <h3 class="font-semibold">Crop Image</h3>
+            <button id="closeCropModal" class="text-gray-500 hover:text-gray-700">✕</button>
+          </div>
+          <div class="p-4 overflow-auto">
+            <canvas id="cropCanvas" class="border rounded w-full max-h-[65vh] cursor-crosshair"></canvas>
+            <p class="text-xs text-gray-500 mt-2">Drag to select crop area. Adjust by dragging corners. Confirm when satisfied.</p>
+          </div>
+          <div class="flex gap-3 justify-end px-4 py-3 border-t bg-gray-50">
+            <button id="cancelCrop" class="px-4 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300">Cancel</button>
+            <button id="applyCrop" class="px-4 py-2 text-sm rounded bg-indigo-600 text-white hover:bg-indigo-500">Apply Crop</button>
+          </div>
+        </div>
+      </div>
 
       <div id="progress" class="hidden mt-4 text-sm text-indigo-600">Processing... Please wait.</div>
       <div id="error" class="hidden mt-4 text-sm text-red-600"></div>
@@ -30,7 +59,7 @@
       </div>
     </div>
 
-    <p class="mt-10 text-center text-xs text-gray-500">Backend API URL configurable via ?api= parameter.</p>
+    <p class="mt-10 text-center text-xs text-gray-500">Backend assumed at http://localhost:8000 (override still possible with ?api= param).</p>
   </div>
 
   <script>
@@ -43,9 +72,177 @@
     const submitBtn = document.getElementById('submitBtn');
 
     function getApiBase() {
+      // Clean default without needing query, still allow override for flexibility
       const params = new URLSearchParams(window.location.search);
       return params.get('api') || 'http://localhost:8000';
     }
+
+    // --- Image Preview & Cropping Logic ---
+    const imageInput = document.getElementById('imageInput');
+    const previewWrapper = document.getElementById('previewWrapper');
+    const previewImage = document.getElementById('previewImage');
+    const editBtn = document.getElementById('editBtn');
+    const resetCropBtn = document.getElementById('resetCropBtn');
+    const cropModal = document.getElementById('cropModal');
+    const closeCropModal = document.getElementById('closeCropModal');
+    const cancelCrop = document.getElementById('cancelCrop');
+    const applyCrop = document.getElementById('applyCrop');
+    const cropCanvas = document.getElementById('cropCanvas');
+    const ctx = cropCanvas.getContext('2d');
+
+    let originalImageBitmap = null;
+    let currentImageFile = null; // The original file selected
+    let croppedBlob = null;      // Result of cropping (if any)
+    let selection = null;        // {x,y,w,h}
+    let isDragging = false;
+    let dragHandle = null;       // which corner
+
+    const HANDLE_SIZE = 10;
+
+    function drawCanvas() {
+      if (!originalImageBitmap) return;
+      cropCanvas.width = originalImageBitmap.width;
+      cropCanvas.height = originalImageBitmap.height;
+      ctx.drawImage(originalImageBitmap, 0, 0);
+      if (selection) {
+        ctx.save();
+        ctx.strokeStyle = '#4f46e5';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(selection.x, selection.y, selection.w, selection.h);
+        ctx.fillStyle = 'rgba(79,70,229,0.15)';
+        ctx.fillRect(selection.x, selection.y, selection.w, selection.h);
+        // handles
+        ctx.fillStyle = '#4f46e5';
+        const corners = getHandles();
+        corners.forEach(pt => ctx.fillRect(pt.x - HANDLE_SIZE/2, pt.y - HANDLE_SIZE/2, HANDLE_SIZE, HANDLE_SIZE));
+        ctx.restore();
+      }
+    }
+
+    function getHandles() {
+      if (!selection) return [];
+      const {x,y,w,h} = selection;
+      return [
+        {name:'tl', x:x, y:y},
+        {name:'tr', x:x+w, y:y},
+        {name:'bl', x:x, y:y+h},
+        {name:'br', x:x+w, y:y+h}
+      ];
+    }
+
+    function pointInHandle(px, py) {
+      return getHandles().find(h => Math.abs(h.x - px) <= HANDLE_SIZE && Math.abs(h.y - py) <= HANDLE_SIZE);
+    }
+
+    cropCanvas.addEventListener('mousedown', (e) => {
+      const rect = cropCanvas.getBoundingClientRect();
+      const x = (e.clientX - rect.left);
+      const y = (e.clientY - rect.top);
+      if (selection) {
+        const h = pointInHandle(x,y);
+        if (h) {
+          dragHandle = h.name;
+          isDragging = true;
+          return;
+        }
+      }
+      // Start new selection
+      selection = {x, y, w:0, h:0};
+      isDragging = true;
+      dragHandle = 'new';
+    });
+
+    cropCanvas.addEventListener('mousemove', (e) => {
+      if (!isDragging || !selection) return;
+      const rect = cropCanvas.getBoundingClientRect();
+      const x = (e.clientX - rect.left);
+      const y = (e.clientY - rect.top);
+      if (dragHandle === 'new') {
+        selection.w = x - selection.x;
+        selection.h = y - selection.y;
+      } else {
+        // Resize existing
+        const {x:ox,y:oy,w,h} = selection;
+        let nx=ox, ny=oy, nw=w, nh=h;
+        if (dragHandle.includes('t')) { nh = (oy + h) - y; ny = y; }
+        if (dragHandle.includes('b')) { nh = y - oy; }
+        if (dragHandle.includes('l')) { nw = (ox + w) - x; nx = x; }
+        if (dragHandle.includes('r')) { nw = x - ox; }
+        selection = {x:nx, y:ny, w:nw, h:nh};
+      }
+      drawCanvas();
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (isDragging) {
+        isDragging = false;
+        dragHandle = null;
+        // Normalize negative width/height
+        if (selection) {
+          if (selection.w < 0) { selection.x += selection.w; selection.w *= -1; }
+          if (selection.h < 0) { selection.y += selection.h; selection.h *= -1; }
+        }
+        drawCanvas();
+      }
+    });
+
+    imageInput.addEventListener('change', async () => {
+      const file = imageInput.files?.[0];
+      if (!file) {
+        previewWrapper.classList.add('hidden');
+        previewImage.src = '';
+        currentImageFile = null;
+        croppedBlob = null;
+        return;
+      }
+      currentImageFile = file;
+      croppedBlob = null;
+      resetCropBtn.classList.add('hidden');
+      const url = URL.createObjectURL(file);
+      previewImage.src = url;
+      previewWrapper.classList.remove('hidden');
+    });
+
+    editBtn.addEventListener('click', async () => {
+      if (!currentImageFile) return;
+      cropModal.classList.remove('hidden');
+      cropModal.classList.add('flex');
+      selection = null;
+      const imgBitmap = await createImageBitmap(currentImageFile);
+      originalImageBitmap = imgBitmap;
+      drawCanvas();
+    });
+
+    closeCropModal.addEventListener('click', closeModal);
+    cancelCrop.addEventListener('click', closeModal);
+    function closeModal(){
+      cropModal.classList.add('hidden');
+      cropModal.classList.remove('flex');
+    }
+
+    applyCrop.addEventListener('click', () => {
+      if (!selection || !originalImageBitmap) { closeModal(); return; }
+      const off = document.createElement('canvas');
+      off.width = selection.w; off.height = selection.h;
+      off.getContext('2d').drawImage(originalImageBitmap, selection.x, selection.y, selection.w, selection.h, 0,0, selection.w, selection.h);
+      off.toBlob(b => {
+        if (b) {
+          croppedBlob = b;
+          const croppedUrl = URL.createObjectURL(b);
+          previewImage.src = croppedUrl;
+          resetCropBtn.classList.remove('hidden');
+        }
+        closeModal();
+      }, currentImageFile.type || 'image/png');
+    });
+
+    resetCropBtn.addEventListener('click', () => {
+      if (currentImageFile) {
+        croppedBlob = null;
+        previewImage.src = URL.createObjectURL(currentImageFile);
+        resetCropBtn.classList.add('hidden');
+      }
+    });
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -65,7 +262,11 @@
       }
 
       const formData = new FormData();
-      formData.append('image', fileInput.files[0]);
+      if (croppedBlob) {
+        formData.append('image', new File([croppedBlob], currentImageFile?.name || 'cropped.png', {type: currentImageFile?.type || 'image/png'}));
+      } else {
+        formData.append('image', fileInput.files[0]);
+      }
 
       try {
         const resp = await fetch(apiBase + '/ocr', {
@@ -77,7 +278,14 @@
             throw new Error(data.error || 'Request failed');
         }
         const data = await resp.json();
-        resultText.textContent = data.text || '(No text detected)';
+        // Format sentences: split on period followed by space or end, keep punctuation
+        const rawText = data.text || '';
+        const sentences = rawText
+          .split(/(?<=\.)\s+/)
+          .map(s => s.trim())
+          .filter(Boolean);
+        const formatted = sentences.length ? sentences.join('\n') : (rawText || '(No text detected)');
+        resultText.textContent = formatted;
         metaEl.innerHTML = `Word count: ${data.meta?.word_count ?? '-'}<br/>Average confidence: ${data.meta?.average_confidence ?? '-'}<br/>Tesseract: ${data.meta?.tesseract_version ?? '-'}`;
         resultWrapper.classList.remove('hidden');
       } catch (err) {
