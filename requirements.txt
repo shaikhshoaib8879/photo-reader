@@ -1,0 +1,40 @@
+#################################################################
+# Application Requirements (Root)                               #
+# Target Python: 3.12.5                                         #
+# NOTE: These versions are user-requested pins. Torch stack     #
+# consumes significant memory; on Render free (512MB) you may   #
+# exceed limits when EasyOCR loads models. Consider switching   #
+# to a slimmer config (see README / DEPLOYMENT guide) if OOM.   #
+#################################################################
+
+Flask==3.0.3
+flask-cors==4.0.0
+gunicorn==21.2.0
+pytesseract==0.3.10
+Pillow==10.4.0
+python-dotenv==1.0.1
+werkzeug==3.0.3
+requests==2.32.3
+
+# OCR engines
+easyocr==1.7.1
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
+
+# EasyOCR indirect deps (pin minimal stable versions to reduce resolution churn)
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+scipy==1.13.1
+scikit-image==0.22.0
+
+# Build tooling to prevent BackendUnavailable errors for sdists
+setuptools>=68.0.0
+wheel>=0.41.0
+
+# (Optional) If Render build fails due to large torch wheels, try:
+#   1) Replace torch/vision/audio above with CPU index variants
+#   2) Or comment out EasyOCR + torch stack and rely on Tesseract
+
+# (Optional alt index for smaller CPU wheels)
+# --extra-index-url https://download.pytorch.org/whl/cpu

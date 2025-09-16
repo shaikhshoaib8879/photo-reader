@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: photo-reader-backend
+    env: python
+    plan: free
+    region: oregon
+    # Lock Python version for compatibility
+    runtime: python
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: |
+      cd backend && gunicorn app:create_app --factory --bind 0.0.0.0:$PORT \
+        --workers=1 --threads=1 --timeout=180 --max-requests=25 --max-requests-jitter=10
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.5
+      - key: OCR_MAX_WIDTH
+        value: "1600"
+      # Set this to 1 if memory pressure occurs due to EasyOCR/torch
+      - key: OCR_DISABLE_EASYOCR
+        value: "0"
+      # Example to disable Tesseract if binary not installed in image
+      - key: OCR_DISABLE_TESSERACT
+        value: "0"
+    healthCheckPath: /health
+    autoDeploy: true
+    scaling:
+      minInstances: 1
+      maxInstances: 1
+      # Free tier concurrency is limited; keep a single worker + threads minimal.
