@@ -29,3 +29,18 @@ services:
       minInstances: 1
       maxInstances: 1
       # Free tier concurrency is limited; keep a single worker + threads minimal.
+
+staticSites:
+  - name: photo-reader-frontend
+    # Directory containing index.html
+    buildCommand: ''  # No build step; pure static
+    publishPath: frontend
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache
+    environment:
+      - key: BACKEND_URL
+        value: https://textify-b0iv.onrender.com
+    # Provide a health check path if desired (Render optional for static)
+    # routes can be added if using client-side routing later

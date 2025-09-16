@@ -84,7 +84,7 @@
       </div>
     </div>
 
-    <p class="mt-10 text-center text-xs text-gray-500">Backend assumed at http://localhost:8000 (override still possible with ?api= param).</p>
+  <p class="mt-10 text-center text-xs text-gray-500">Backend auto-detected (local vs production). Override with <code>?api=&lt;URL&gt;</code>.</p>
   </div>
 
   <script src="https://unpkg.com/cropperjs@1.6.2/dist/cropper.min.js"></script>
@@ -237,9 +237,11 @@
     const submitBtn = document.getElementById('submitBtn');
 
     function getApiBase() {
-      // Clean default without needing query, still allow override for flexibility
       const params = new URLSearchParams(window.location.search);
-      return params.get('api') || 'http://localhost:8000';
+      const override = params.get('api');
+      if (override) return override.replace(/\/$/, '');
+      const isLocal = ['localhost','127.0.0.1'].includes(location.hostname);
+      return isLocal ? 'http://localhost:8001' : 'https://textify-b0iv.onrender.com';
     }
 
     // --- Image Preview & Cropping Logic ---
