@@ -33,14 +33,26 @@ source .venv/bin/activate
 
 ### 3. Install Python Dependencies
 ```bash
-pip install -r backend/requirements.txt
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-### 4. Run Locally
+### 4. Run Locally (Development)
+Simplest (Flask dev server):
 ```bash
 python backend/app.py
 ```
-Backend will start at `http://localhost:8000`.
+Or with Gunicorn (mirrors production):
+```bash
+gunicorn --chdir backend backend.wsgi:app --bind 0.0.0.0:8001
+```
+Then visit `http://localhost:8001/health`.
+
+### 4b. Sanity Check Script
+```bash
+python backend/sanity.py
+```
+This prints confirmation that `app.app` and `wsgi.app` are Flask instances.
 
 ### 5. Run Tests
 ```bash
