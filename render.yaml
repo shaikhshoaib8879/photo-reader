@@ -33,7 +33,8 @@ services:
 staticSites:
   - name: photo-reader-frontend
     # Directory containing index.html
-    buildCommand: ''  # No build step; pure static
+    buildCommand: |
+      echo "window.BACKEND_URL=window.BACKEND_URL||'${BACKEND_URL:-https://textify-b0iv.onrender.com}'" > frontend/config.js
     publishPath: frontend
     headers:
       - path: /*

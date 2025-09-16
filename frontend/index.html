@@ -7,6 +7,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://unpkg.com/cropperjs@1.6.2/dist/cropper.min.css" />
   <script src="https://unpkg.com/nspell/dist/nspell.js"></script>
+  <script src="config.js" defer></script>
   <style>
     /* Ensure modal scroll doesn't shrink cropper unexpectedly */
     #cropperImage { max-width: 100%; }
@@ -240,6 +241,8 @@
       const params = new URLSearchParams(window.location.search);
       const override = params.get('api');
       if (override) return override.replace(/\/$/, '');
+      // Prefer injected BACKEND_URL if present (from config.js produced at deploy time)
+      if (window.BACKEND_URL) return String(window.BACKEND_URL).replace(/\/$/, '');
       const isLocal = ['localhost','127.0.0.1'].includes(location.hostname);
       return isLocal ? 'http://localhost:8001' : 'https://textify-b0iv.onrender.com';
     }
